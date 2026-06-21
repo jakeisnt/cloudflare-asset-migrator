@@ -10,7 +10,9 @@ It can copy/dump:
 
 Permission note: Stream migration requires **write/edit permission on the source (`from`) token**, not only read permission, because Cloudflare requires a `POST` to create/download MP4 renditions before the videos can be copied.
 
-Stream uploads are idempotent: the migrator records `migratedFromStreamUid` plus source account/asset details in target video metadata, checks both the existing manifest and target Stream metadata before uploading, and skips previously migrated videos on reruns.
+Stream uploads are idempotent: the migrator records `migratedFromStreamUid` plus source account/asset details in target video metadata, checks both the existing manifest and target Stream metadata before uploading, and skips previously migrated videos on reruns. Image uploads also include source asset trace metadata.
+
+KV migrations rewrite text/JSON values as they are uploaded so references to migrated Stream UIDs and Images IDs point at the new target assets. If KV values contain full delivery URLs, set optional `CF_FROM_STREAM_CUSTOMER_CODE`/`CF_TO_STREAM_CUSTOMER_CODE` and `CF_FROM_IMAGES_ACCOUNT_HASH`/`CF_TO_IMAGES_ACCOUNT_HASH` so those host/hash references are rewritten too.
 
 Run from this directory:
 

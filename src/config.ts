@@ -15,6 +15,10 @@ export type Config = {
   r2BucketMap: Pair[];
   fromR2ParentAccessKeyId?: string;
   toR2ParentAccessKeyId?: string;
+  fromStreamCustomerCode?: string;
+  toStreamCustomerCode?: string;
+  fromImagesAccountHash?: string;
+  toImagesAccountHash?: string;
   streamDownloadReadyTimeoutMs: number;
   streamPollMs: number;
   streamTransferTimeoutMs: number;
@@ -75,6 +79,10 @@ export function createConfig(options: CliOptions): Config {
     ),
     fromR2ParentAccessKeyId: process.env.CF_FROM_R2_PARENT_ACCESS_KEY_ID,
     toR2ParentAccessKeyId: process.env.CF_TO_R2_PARENT_ACCESS_KEY_ID,
+    fromStreamCustomerCode: process.env.CF_FROM_STREAM_CUSTOMER_CODE,
+    toStreamCustomerCode: process.env.CF_TO_STREAM_CUSTOMER_CODE,
+    fromImagesAccountHash: process.env.CF_FROM_IMAGES_ACCOUNT_HASH,
+    toImagesAccountHash: process.env.CF_TO_IMAGES_ACCOUNT_HASH,
     streamDownloadReadyTimeoutMs: numberFromValue(
       "CF_STREAM_DOWNLOAD_READY_TIMEOUT_MS",
       process.env.CF_STREAM_DOWNLOAD_READY_TIMEOUT_MS ?? process.env.CF_STREAM_DOWNLOAD_TIMEOUT_MS,

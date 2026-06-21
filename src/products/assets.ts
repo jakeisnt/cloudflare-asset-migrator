@@ -5,7 +5,7 @@ import { cfFetch, cfJson, httpFetch, listPaginated, parseCloudflareJson, retry }
 import { responseBytesWithRetries, saveResponseWithRetries, writeBytes } from "../files";
 import { writeManifest } from "../manifest";
 import { createR2TemporaryCredentials, r2Fetch, r2ListObjects } from "../r2";
-import type { ImageItem, KvKeyInfo, KvNamespace, Manifest, StreamItem, StreamRecord } from "../types";
+import type { ImageItem, ImageRecord, KvKeyInfo, KvNamespace, Manifest, StreamItem, StreamRecord } from "../types";
 import {
   arrayValue,
   asRecord,
@@ -72,8 +72,7 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
         const bytes = await Bun.file(outPath).bytes();
         form.set("file", new Blob([bytes], { type: contentType }), stringValue(image.filename) ?? filename);
         form.set("id", id);
-        if (typeof image.metadata === "object" && image.metadata !== null && Object.keys(image.metadata).length > 0)
-          form.set("metadata", JSON.stringify(image.metadata));
+        form.set("metadata", JSON.stringify(imageMigrationMetadata(context, id, image)));
         if (typeof image.requireSignedURLs === "boolean")
           form.set("requireSignedURLs", String(image.requireSignedURLs));
         const upload = asRecord(
@@ -108,6 +107,26 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
     manifest.images.push(record);
     await writeManifest(context.config, manifest);
   }
+}
+
+function imageMigrationMetadata(context: ApiContext, id: string, image: ImageItem) {
+  const originalMetadata = asRecord(image.metadata);
+  return {
+    ...originalMetadata,
+    migratedFromImageId: id,
+    migratedFromAccountId: context.config.fromAccountId,
+    migratedToAccountId: context.config.toAccountId,
+    migratedBy: "cloudflare-asset-migrator",
+    migratedAt: new Date().toISOString(),
+    sourceAsset: {
+      product: "cloudflare-images",
+      accountId: context.config.fromAccountId,
+      id,
+      filename: stringValue(image.filename),
+      metadata: originalMetadata,
+      requireSignedURLs: typeof image.requireSignedURLs === "boolean" ? image.requireSignedURLs : undefined,
+    },
+  };
 }
 
 function isAssetPipelineBlocker(error: unknown) {
@@ -357,9 +376,123 @@ async function uploadStreamFromFile(
   });
 }
 
+async function assetReferenceReplacementsForKv(context: ApiContext, manifest: Manifest) {
+  const previousManifest = await readPreviousManifest(context);
+  const replacements = new Map<string, string>();
+  addRecordReplacements(replacements, [
+    ...streamReferenceRecords(asRecord(previousManifest).stream),
+    ...manifest.stream,
+  ]);
+  addRecordReplacements(replacements, [
+    ...imageReferenceRecords(asRecord(previousManifest).images),
+    ...manifest.images,
+  ]);
+
+  if (context.config.fromStreamCustomerCode && context.config.toStreamCustomerCode) {
+    replacements.set(context.config.fromStreamCustomerCode, context.config.toStreamCustomerCode);
+    replacements.set(
+      `customer-${context.config.fromStreamCustomerCode}.cloudflarestream.com`,
+      `customer-${context.config.toStreamCustomerCode}.cloudflarestream.com`,
+    );
+  }
+  if (context.config.fromImagesAccountHash && context.config.toImagesAccountHash) {
+    replacements.set(context.config.fromImagesAccountHash, context.config.toImagesAccountHash);
+    replacements.set(
+      `imagedelivery.net/${context.config.fromImagesAccountHash}`,
+      `imagedelivery.net/${context.config.toImagesAccountHash}`,
+    );
+  }
+
+  const sortedReplacements = [...replacements]
+    .filter(([from, to]) => from !== to)
+    .sort(([left], [right]) => right.length - left.length);
+  log(`KV: prepared ${sortedReplacements.length} asset reference replacement(s).`);
+  return sortedReplacements;
+}
+
+async function readPreviousManifest(context: ApiContext) {
+  const manifestPath = path.join(context.config.dumpDir, "manifest.json");
+  if (!existsSync(manifestPath)) return {};
+  try {
+    return JSON.parse(await Bun.file(manifestPath).text()) as unknown;
+  } catch (error) {
+    logError(
+      `KV: could not read previous manifest for asset reference rewriting (${errorMessage(error)}); continuing.`,
+    );
+    return {};
+  }
+}
+
+function streamReferenceRecords(value: unknown): StreamRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const record = asRecord(entry);
+    const uid = stringValue(record.uid);
+    const uploadedUid = stringValue(record.uploadedUid);
+    if (!uid || !uploadedUid) return [];
+    return [
+      {
+        uid,
+        name: stringValue(record.name) ?? uid,
+        localPath: stringValue(record.localPath) ?? "",
+        downloadUrl: null,
+        uploadedUid,
+      },
+    ];
+  });
+}
+
+function imageReferenceRecords(value: unknown): ImageRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const record = asRecord(entry);
+    const id = stringValue(record.id);
+    const uploadedId = stringValue(record.uploadedId);
+    if (!id || !uploadedId) return [];
+    return [
+      {
+        id,
+        filename: stringValue(record.filename) ?? null,
+        localPath: stringValue(record.localPath) ?? "",
+        uploadedId,
+        skipped: Boolean(record.skipped),
+      },
+    ];
+  });
+}
+
+function addRecordReplacements(replacements: Map<string, string>, records: Array<StreamRecord | ImageRecord>) {
+  for (const record of records) {
+    if ("uid" in record && record.uploadedUid) replacements.set(record.uid, record.uploadedUid);
+    if ("id" in record && record.uploadedId) replacements.set(record.id, record.uploadedId);
+  }
+}
+
+function rewriteKvAssetReferences(bytes: Uint8Array, replacements: Array<[string, string]>) {
+  if (replacements.length === 0) return { bytes, replacementCount: 0 };
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return { bytes, replacementCount: 0 };
+  }
+
+  let replacementCount = 0;
+  let rewritten = text;
+  for (const [from, to] of replacements) {
+    const count = rewritten.split(from).length - 1;
+    if (count === 0) continue;
+    replacementCount += count;
+    rewritten = rewritten.replaceAll(from, to);
+  }
+  if (replacementCount === 0) return { bytes, replacementCount };
+  return { bytes: new TextEncoder().encode(rewritten), replacementCount };
+}
+
 export async function migrateKv(context: ApiContext, manifest: Manifest) {
   if (context.config.kvNamespaceMap.length === 0)
     throw new Error("CF_MIGRATE includes kv but CF_KV_NAMESPACE_MAP is empty.");
+  const assetReferenceReplacements = await assetReferenceReplacementsForKv(context, manifest);
   for (const [fromNamespaceRef, toNamespaceRef] of context.config.kvNamespaceMap) {
     const fromNamespaceId = await resolveKvNamespace(context, "from", fromNamespaceRef);
     const toNamespaceId = await resolveKvNamespace(context, "to", toNamespaceRef);
@@ -384,6 +517,10 @@ export async function migrateKv(context: ApiContext, manifest: Manifest) {
           ),
         );
         await writeBytes(localPath, value.bytes);
+        const rewrittenValue = rewriteKvAssetReferences(value.bytes, assetReferenceReplacements);
+        if (rewrittenValue.replacementCount > 0) {
+          log(`KV ${fromNamespaceId}/${key}: rewrote ${rewrittenValue.replacementCount} asset reference(s).`);
+        }
         if (!context.config.dryRun) {
           await cfFetch(
             context,
@@ -392,7 +529,7 @@ export async function migrateKv(context: ApiContext, manifest: Manifest) {
             {
               method: "PUT",
               headers: { "content-type": value.contentType },
-              body: value.bytes,
+              body: rewrittenValue.bytes,
             },
           );
         }
