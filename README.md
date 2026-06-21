@@ -1,6 +1,11 @@
 # Cloudflare site migrator
 
-Bun/TypeScript tool for copying Cloudflare account/site resources into another account. It is meant to be reusable, but it is still somewhat slop: review the manifest, run dry-runs first, and expect to manually verify Cloudflare edge cases before cutover.
+Copy Cloudflare account and site resources from one account to another.
+Developed when working with a client to move a website and all corresponding hosted data from my cloudflare system to theirs!
+
+Most of this is AI slop - it's the bare minimum that was necessary for me to run a one-time website migration between accounts - but I plan on revisiting it as I continue to wokr with external users via Cloudlare.
+
+`bun` is expected to be used. Not tested with other runtimes.
 
 Copies/dumps:
 
