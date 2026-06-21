@@ -74,7 +74,7 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
         const form = new FormData();
         const bytes = await Bun.file(outPath).bytes();
         form.set("file", new Blob([bytes], { type: contentType }), stringValue(image.filename) ?? filename);
-        form.set("id", id);
+        if (!isUuidLike(id)) form.set("id", id);
         form.set("metadata", JSON.stringify(imageMigrationMetadata(context, id, image)));
         if (typeof image.requireSignedURLs === "boolean")
           form.set("requireSignedURLs", String(image.requireSignedURLs));
@@ -112,6 +112,10 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
     manifest.images.push(record);
     await writeManifest(context.config, manifest);
   }
+}
+
+function isUuidLike(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
 function imageMigrationMetadata(context: ApiContext, id: string, image: ImageItem) {
