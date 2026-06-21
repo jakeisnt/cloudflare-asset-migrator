@@ -1,6 +1,7 @@
 import type { Config } from "./config";
 import { API, type CloudflareEnvelope, type CloudflareError, type HttpError, type Side } from "./types";
 import {
+  asRecord,
   errorMessage,
   errorStatus,
   itemsFromPaginatedResponse,
@@ -8,9 +9,10 @@ import {
   numberValue,
   requestLabel,
   resultInfo,
+  stringValue,
 } from "./utils";
 
-export type ApiContext = { config: Config };
+export type ApiContext = { config: Config; tokenEmails?: Partial<Record<Side, string | null>> };
 
 export async function listPaginated(fetchPage: (page: number, perPage: number) => Promise<unknown>) {
   const items: unknown[] = [];
@@ -45,7 +47,8 @@ export async function cfJson(context: ApiContext, side: Side, endpoint: string, 
     const response = await cfFetch(context, side, endpoint, init);
     const json = (await response.json()) as CloudflareEnvelope;
     if (json.success === false) {
-      const error = new Error(`Cloudflare API error: ${JSON.stringify(json.errors)}`) as CloudflareError;
+      const message = await cloudflareErrorMessage(context, side, endpoint, init.method, undefined, "", json.errors);
+      const error = new Error(message) as CloudflareError;
       error.cloudflareErrors = json.errors;
       throw error;
     }
@@ -67,9 +70,16 @@ export async function cfFetch(context: ApiContext, side: Side, endpoint: string,
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      const error = new Error(
-        `Cloudflare ${side} request failed: ${response.status} ${response.statusText}${body ? ` ${body}` : ""}`,
-      ) as CloudflareError;
+      const message = await cloudflareErrorMessage(
+        context,
+        side,
+        endpoint,
+        init.method,
+        response.status,
+        response.statusText,
+        body,
+      );
+      const error = new Error(message) as CloudflareError;
       error.status = response.status;
       error.body = body;
       error.retryAfterMs = retryAfterMs(response.headers.get("retry-after"));
@@ -125,6 +135,78 @@ export async function retry<T>(context: ApiContext, label: string, operation: ()
     }
   }
   throw lastError;
+}
+
+async function cloudflareErrorMessage(
+  context: ApiContext,
+  side: Side,
+  endpoint: string,
+  method: string | undefined,
+  status: number | undefined,
+  statusText: string,
+  bodyOrErrors: unknown,
+) {
+  const base = `Cloudflare ${side} request failed: ${status ? `${status} ${statusText}` : "API error"}${
+    bodyOrErrors ? ` ${stringifyErrorDetails(bodyOrErrors)}` : ""
+  }`;
+  if (!isPermissionFailure(status, bodyOrErrors)) return base;
+
+  const sideLabel = side === "from" ? "source" : "target";
+  const accountId = side === "from" ? context.config.fromAccountId : context.config.toAccountId;
+  const email = await tokenEmail(context, side);
+  const owner = email ? `${email}` : "unknown email (the token could not read /user)";
+  return `${base}\nPermission failure details: Cloudflare denied ${requestLabel(method, endpoint)} for the ${sideLabel} account ${accountId} using API token owner ${owner}.\nSuggested fix: ${permissionSuggestion(side, endpoint)}`;
+}
+
+function stringifyErrorDetails(value: unknown) {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function isPermissionFailure(status: number | undefined, bodyOrErrors: unknown) {
+  if (status === 401 || status === 403) return true;
+  const text = stringifyErrorDetails(bodyOrErrors).toLowerCase();
+  return (
+    text.includes("permission") ||
+    text.includes("not authorized") ||
+    text.includes("unauthorized") ||
+    text.includes("authentication error") ||
+    text.includes("requires authorization")
+  );
+}
+
+function permissionSuggestion(side: Side, endpoint: string) {
+  const access = side === "from" ? "read/list access on the source account" : "edit/write access on the target account";
+  if (endpoint.includes("/images/"))
+    return `create or update the token for a member of that account with Cloudflare Images ${side === "from" ? "Read" : "Edit"} permission, confirm the account ID is correct, then rerun. If the error mentions service limit 5453, enable/upgrade Cloudflare Images on the target account or switch to the account that has Images quota.`;
+  if (endpoint.includes("/stream"))
+    return `create or update the token for a member of that account with Stream ${side === "from" ? "Read" : "Edit"} permission and confirm the account ID is correct.`;
+  if (endpoint.includes("/storage/kv"))
+    return `create or update the token for a member of that account with Workers KV Storage ${side === "from" ? "Read" : "Edit"} permission and confirm the namespace/account IDs are correct.`;
+  if (endpoint.includes("/r2/"))
+    return `create or update the token for a member of that account with R2 ${side === "from" ? "Read" : "Edit"} permission and confirm the bucket/account IDs are correct.`;
+  if (endpoint.startsWith("/zones/"))
+    return `create or update the token for a member of that account with the needed Zone permissions (${access}) for DNS/settings/rules/routes on this zone, and confirm the zone ID belongs to that account.`;
+  return `create or update the token for a member of that account with ${access} for this Cloudflare product, then confirm the account/zone ID is correct.`;
+}
+
+async function tokenEmail(context: ApiContext, side: Side) {
+  context.tokenEmails ??= {};
+  if (side in context.tokenEmails) return context.tokenEmails[side];
+  const token = side === "from" ? context.config.fromToken : context.config.toToken;
+  try {
+    const response = await fetchWithTimeout(context, `${API}/user`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) {
+      context.tokenEmails[side] = null;
+      return null;
+    }
+    const json = (await response.json()) as CloudflareEnvelope;
+    const email = stringValue(asRecord(json.result).email);
+    context.tokenEmails[side] = email ?? null;
+    return context.tokenEmails[side];
+  } catch {
+    context.tokenEmails[side] = null;
+    return null;
+  }
 }
 
 function isRetryableError(error: unknown) {
