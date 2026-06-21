@@ -94,6 +94,7 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
         record.skipped = true;
       } else {
         record.error = errorMessage(error);
+        removeImageFailures(manifest, id);
         manifest.errors.push({ product: "images", id, error: record.error });
         logError(`Image ${id}: ${record.error}`);
         manifest.images.push(record);
@@ -243,6 +244,7 @@ export async function migrateStream(context: ApiContext, manifest: Manifest) {
       }
     } catch (error) {
       record.error = errorMessage(error);
+      removeStreamFailures(manifest, uid);
       manifest.errors.push({ product: "stream", uid, error: record.error });
       logError(`Stream ${uid}: ${record.error}`);
       manifest.stream.push(record);
