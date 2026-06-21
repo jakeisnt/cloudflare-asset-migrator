@@ -110,7 +110,9 @@ export function createConfig(options: CliOptions): Config {
   const env = parseEnv(process.env);
   const retryFailedProducts = parseProducts(options.retryFailed ?? env.CF_MIGRATE_RETRY_FAILED ?? "");
   const products = parseProducts(
-    options.products ?? env.CF_MIGRATE ?? (retryFailedProducts.size > 0 ? [...retryFailedProducts].join(",") : "images,stream"),
+    options.products ??
+      env.CF_MIGRATE ??
+      (retryFailedProducts.size > 0 ? [...retryFailedProducts].join(",") : "images,stream"),
   );
   return {
     fromAccountId: required("from account", options.fromAccountId ?? env.CF_FROM_ACCOUNT_ID),
@@ -144,11 +146,7 @@ export function createConfig(options: CliOptions): Config {
       env.CF_STREAM_TRANSFER_TIMEOUT_MS,
       1_800_000,
     ),
-    transferTimeoutMs: numberFromValue(
-      "CF_MIGRATE_TRANSFER_TIMEOUT_MS",
-      env.CF_MIGRATE_TRANSFER_TIMEOUT_MS,
-      300_000,
-    ),
+    transferTimeoutMs: numberFromValue("CF_MIGRATE_TRANSFER_TIMEOUT_MS", env.CF_MIGRATE_TRANSFER_TIMEOUT_MS, 300_000),
     maxRetries: numberFromValue("CF_MIGRATE_MAX_RETRIES", env.CF_MIGRATE_MAX_RETRIES, 8),
     retryBaseMs: numberFromValue("CF_MIGRATE_RETRY_BASE_MS", env.CF_MIGRATE_RETRY_BASE_MS, 1_000),
     retryMaxMs: numberFromValue("CF_MIGRATE_RETRY_MAX_MS", env.CF_MIGRATE_RETRY_MAX_MS, 60_000),
