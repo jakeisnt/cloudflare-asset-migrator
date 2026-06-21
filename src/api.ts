@@ -193,7 +193,7 @@ function permissionSuggestion(side: Side, endpoint: string) {
   if (endpoint.includes("/images/"))
     return `create or update the token for a member of that account with Cloudflare Images ${side === "from" ? "Read" : "Edit"} permission, confirm the account ID is correct, then rerun. If the error mentions service limit 5453, enable/upgrade Cloudflare Images on the target account or switch to the account that has Images quota.`;
   if (endpoint.includes("/stream"))
-    return `create or update the token for a member of that account with Stream ${side === "from" ? "Read" : "Edit"} permission and confirm the account ID is correct.`;
+    return `create or update the token for a member of that account with Stream Edit permission and confirm the account ID is correct. Source Stream migrations also need write/edit permission because the migrator must POST to create downloadable MP4 renditions before copying videos.`;
   if (endpoint.includes("/storage/kv"))
     return `create or update the token for a member of that account with Workers KV Storage ${side === "from" ? "Read" : "Edit"} permission and confirm the namespace/account IDs are correct.`;
   if (endpoint.includes("/r2/"))

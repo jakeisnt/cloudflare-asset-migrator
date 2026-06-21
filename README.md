@@ -8,6 +8,8 @@ It can copy/dump:
 - KV namespace contents and R2 buckets when maps are supplied
 - Zone-level site config: DNS records, selected zone settings, Page Rules, Rulesets, Workers Routes, and Custom Hostnames
 
+Permission note: Stream migration requires **write/edit permission on the source (`from`) token**, not only read permission, because Cloudflare requires a `POST` to create/download MP4 renditions before the videos can be copied.
+
 Run from this directory:
 
 ```sh
