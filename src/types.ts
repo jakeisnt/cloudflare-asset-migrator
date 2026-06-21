@@ -114,6 +114,10 @@ export type ImageItem = {
 export type StreamItem = {
   uid?: unknown;
   meta?: { name?: unknown; filename?: unknown } & Record<string, unknown>;
+  status?: unknown;
+  input?: unknown;
+  duration?: unknown;
+  readyToStream?: unknown;
   requireSignedURLs?: unknown;
   allowedOrigins?: unknown;
   thumbnailTimestampPct?: unknown;

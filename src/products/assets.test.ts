@@ -181,6 +181,41 @@ describe("migrateStream", () => {
     });
   });
 
+  test("flags unusable pending-upload Stream stubs as deletion candidates", async () => {
+    await withTempContext({}, async (context, manifest) => {
+      const mock = installFetchMock((url) => {
+        const path = endpoint(url);
+        if (path === "/client/v4/accounts/from-account/stream?page=1&per_page=100&include_counts=true") {
+          return jsonResponse([
+            {
+              uid: "bad-video",
+              meta: { name: "Bad upload" },
+              status: { state: "pendingupload" },
+              readyToStream: false,
+              duration: -1,
+              input: { width: -1, height: -1 },
+            },
+          ]);
+        }
+        if (path === "/client/v4/accounts/to-account/stream?page=1&per_page=100&include_counts=true") {
+          return jsonResponse([]);
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      });
+      restoreFetch = mock.restore;
+
+      await migrateStream(context, manifest);
+
+      expect(manifest.stream).toEqual([
+        expect.objectContaining({ uid: "bad-video", uploadedUid: null, skipped: false }),
+      ]);
+      expect(manifest.stream[0]?.error).toContain("candidate for manual deletion");
+      expect(mock.calls.map((call) => endpoint(call.url))).not.toContain(
+        "/client/v4/accounts/from-account/stream/bad-video/downloads",
+      );
+    });
+  });
+
   test("uses target Stream metadata to avoid uploading an already migrated video", async () => {
     await withTempContext({}, async (context, manifest) => {
       const mock = installFetchMock((url) => {

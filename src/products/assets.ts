@@ -203,6 +203,17 @@ export async function migrateStream(context: ApiContext, manifest: Manifest) {
         continue;
       }
 
+      const sourceIssue = obviousUnusableStreamIssue(video);
+      if (sourceIssue) {
+        record.error = `${sourceIssue} This source Stream video looks like an unusable upload stub and is a candidate for manual deletion in Cloudflare Stream.`;
+        removeStreamFailures(manifest, uid);
+        manifest.errors.push({ product: "stream", uid, error: record.error });
+        logError(`Stream ${uid}: ${record.error}`);
+        manifest.stream.push(record);
+        await writeManifest(context.config, manifest);
+        continue;
+      }
+
       const existingUploadedUid = uploadedBySourceUid.get(uid);
       if (existingUploadedUid) {
         log(`Stream ${uid}: already migrated to target Stream as ${existingUploadedUid}; skipping upload.`);
@@ -260,6 +271,19 @@ export async function migrateStream(context: ApiContext, manifest: Manifest) {
     manifest.stream.push(record);
     await writeManifest(context.config, manifest);
   }
+}
+
+function obviousUnusableStreamIssue(video: StreamItem) {
+  const statusState = stringValue(asRecord(video.status).state);
+  const duration = typeof video.duration === "number" ? video.duration : undefined;
+  const input = asRecord(video.input);
+  const width = typeof input.width === "number" ? input.width : undefined;
+  const height = typeof input.height === "number" ? input.height : undefined;
+  const readyToStream = typeof video.readyToStream === "boolean" ? video.readyToStream : undefined;
+  const isStalePendingUpload = statusState === "pendingupload" && readyToStream === false;
+  const hasInvalidMediaShape = duration === -1 && width === -1 && height === -1;
+  if (!isStalePendingUpload || !hasInvalidMediaShape) return null;
+  return `status=${statusState}, readyToStream=${readyToStream}, duration=${duration}, input=${width}x${height}.`;
 }
 
 function failedStreamUids(manifest: Manifest) {
