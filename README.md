@@ -3,9 +3,9 @@
 Copy Cloudflare account and site resources from one account to another.
 Developed when working with a client to move a website and all corresponding hosted data from my cloudflare system to theirs!
 
-Most of this is AI slop - it's the bare minimum that was necessary for me to run a one-time website migration between accounts - but I plan on revisiting it as I continue to wokr with external users via Cloudlare.
+Most of this is AI slop - it's the bare minimum that was necessary for me to run a one-time website migration between accounts - but I plan on revisiting it as I continue to collaborate via Cloudlare :  )
 
-`bun` is expected to be used. Not tested with other runtimes.
+`bun` is expected to be used as the runtime. This repo hasn't been tested with anything else.
 
 Copies/dumps:
 
