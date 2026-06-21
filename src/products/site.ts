@@ -19,15 +19,48 @@ export async function migrateSiteProducts(context: ApiContext, manifest: Manifes
     "workers-routes",
     "custom-hostnames",
   ];
-  if (!siteProducts.some((product) => context.config.products.has(product))) return;
-  assertZoneConfig(context.config);
-  await writeSiteChecklist(context);
-  if (context.config.products.has("dns")) await migrateDnsRecords(context, manifest);
-  if (context.config.products.has("zone-settings")) await migrateZoneSettings(context, manifest);
-  if (context.config.products.has("page-rules")) await migratePageRules(context, manifest);
-  if (context.config.products.has("rulesets")) await migrateRulesets(context, manifest);
-  if (context.config.products.has("workers-routes")) await migrateWorkersRoutes(context, manifest);
-  if (context.config.products.has("custom-hostnames")) await migrateCustomHostnames(context, manifest);
+  const selectedSiteProducts = siteProducts.filter((product) => context.config.products.has(product));
+  if (selectedSiteProducts.length === 0) return;
+
+  try {
+    assertZoneConfig(context.config);
+    await writeSiteChecklist(context);
+  } catch (error) {
+    const message = errorMessage(error);
+    for (const product of selectedSiteProducts) manifest.errors.push({ product, error: message });
+    logError(`site products: skipped selected site pipelines because zone setup is incomplete: ${message}`);
+    return;
+  }
+
+  if (context.config.products.has("dns"))
+    await runSiteProduct(context, manifest, "dns", () => migrateDnsRecords(context, manifest));
+  if (context.config.products.has("zone-settings"))
+    await runSiteProduct(context, manifest, "zone-settings", () => migrateZoneSettings(context, manifest));
+  if (context.config.products.has("page-rules"))
+    await runSiteProduct(context, manifest, "page-rules", () => migratePageRules(context, manifest));
+  if (context.config.products.has("rulesets"))
+    await runSiteProduct(context, manifest, "rulesets", () => migrateRulesets(context, manifest));
+  if (context.config.products.has("workers-routes"))
+    await runSiteProduct(context, manifest, "workers-routes", () => migrateWorkersRoutes(context, manifest));
+  if (context.config.products.has("custom-hostnames"))
+    await runSiteProduct(context, manifest, "custom-hostnames", () => migrateCustomHostnames(context, manifest));
+}
+
+async function runSiteProduct(
+  context: ApiContext,
+  manifest: Manifest,
+  product: SiteProduct,
+  run: () => Promise<void>,
+) {
+  try {
+    await run();
+  } catch (error) {
+    const message = errorMessage(error);
+    manifest.errors.push({ product, error: message });
+    logError(`${product}: stopped this pipeline after error: ${message}`);
+    log(`${product}: continuing with remaining selected product pipelines.`);
+    await writeManifest(context.config, manifest);
+  }
 }
 
 async function writeSiteChecklist(context: ApiContext) {

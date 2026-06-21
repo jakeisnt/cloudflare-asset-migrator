@@ -13,7 +13,8 @@ import { createConfig } from "./config";
 import { createManifest, logMigrationSummary, prepareDumpDirs, writeManifest } from "./manifest";
 import { migrateImages, migrateKv, migrateR2, migrateStream } from "./products/assets";
 import { migrateSiteProducts } from "./products/site";
-import { log, logError } from "./utils";
+import type { Manifest, Product } from "./types";
+import { errorMessage, log, logError } from "./utils";
 
 const program = new Command();
 
@@ -47,10 +48,10 @@ program
     await prepareDumpDirs(config);
 
     try {
-      if (config.products.has("images")) await migrateImages(context, manifest);
-      if (config.products.has("stream")) await migrateStream(context, manifest);
-      if (config.products.has("kv")) await migrateKv(context, manifest);
-      if (config.products.has("r2")) await migrateR2(context, manifest);
+      if (config.products.has("images")) await runProduct("images", manifest, () => migrateImages(context, manifest));
+      if (config.products.has("stream")) await runProduct("stream", manifest, () => migrateStream(context, manifest));
+      if (config.products.has("kv")) await runProduct("kv", manifest, () => migrateKv(context, manifest));
+      if (config.products.has("r2")) await runProduct("r2", manifest, () => migrateR2(context, manifest));
       await migrateSiteProducts(context, manifest);
     } finally {
       manifest.finishedAt = new Date().toISOString();
@@ -59,6 +60,17 @@ program
       if (manifest.errors.length > 0) process.exitCode = 1;
     }
   });
+
+async function runProduct(product: Product, manifest: Manifest, run: () => Promise<void>) {
+  try {
+    await run();
+  } catch (error) {
+    const message = errorMessage(error);
+    manifest.errors.push({ product, error: message });
+    logError(`${product}: stopped this pipeline after error: ${message}`);
+    log(`${product}: continuing with remaining selected product pipelines.`);
+  }
+}
 
 try {
   await program.parseAsync();
