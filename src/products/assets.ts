@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import type { ApiContext } from "../api";
-import { cfFetch, cfJson, httpFetch, listPaginated } from "../api";
+import { cfFetch, cfJson, httpFetch, listPaginated, parseCloudflareJson, retry } from "../api";
 import { responseBytesWithRetries, saveResponseWithRetries, writeBytes } from "../files";
 import { writeManifest } from "../manifest";
 import { createR2TemporaryCredentials, r2Fetch, r2ListObjects } from "../r2";
@@ -55,8 +55,10 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
               `/accounts/${context.config.fromAccountId}/images/v1/${encodeURIComponent(id)}/blob`,
             ),
           outPath,
+          context.config.transferTimeoutMs,
         );
         contentType = blob.contentType;
+        log(`Image ${id}: saved local dump (${blob.bytesWritten} bytes).`);
       }
 
       if (context.config.dryRun) {
@@ -92,7 +94,8 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
         logError(`Image ${id}: ${record.error}`);
         manifest.images.push(record);
         await writeManifest(context.config, manifest);
-        throw error;
+        log(`Image ${id}: skipping after failure; continuing with next image.`);
+        continue;
       }
     }
 
@@ -126,34 +129,33 @@ export async function migrateStream(context: ApiContext, manifest: Manifest) {
     if (!uid) continue;
     const name = stringValue(video.meta?.name) ?? stringValue(video.meta?.filename) ?? uid;
     const outPath = path.join(context.config.dumpDir, "stream", `${safeName(uid)}-${safeName(name)}.mp4`);
-    const record = { uid, name, localPath: outPath, downloadUrl: null, uploadedUid: null };
+    const record = { uid, name, localPath: outPath, downloadUrl: null, uploadedUid: null, size: 0 };
 
     try {
-      const downloadUrl = await ensureStreamDownloadUrl(context, uid);
-      record.downloadUrl = downloadUrl;
-      await saveResponseWithRetries(
-        context,
-        `Stream ${uid} MP4 download`,
-        () => httpFetch(context, downloadUrl),
-        outPath,
-      );
+      if (fileExistsWithContent(outPath)) {
+        record.size = statSync(outPath).size;
+        log(`Stream ${uid}: using existing local MP4 dump (${record.size} bytes).`);
+      } else {
+        const downloadUrl = await ensureStreamDownloadUrl(context, uid);
+        record.downloadUrl = downloadUrl;
+        log(`Stream ${uid}: downloading MP4 backup...`);
+        await saveResponseWithRetries(
+          context,
+          `Stream ${uid} MP4 download`,
+          () => httpFetch(context, downloadUrl, { timeoutMs: context.config.streamTransferTimeoutMs }),
+          outPath,
+          context.config.streamTransferTimeoutMs,
+        );
+        record.size = statSync(outPath).size;
+        log(`Stream ${uid}: saved MP4 backup (${record.size} bytes).`);
+      }
       if (context.config.dryRun) {
         log(`Stream ${uid}: dry-run, not uploading.`);
       } else {
-        const copied = asRecord(
-          await cfJson(context, "to", `/accounts/${context.config.toAccountId}/stream/copy`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              url: downloadUrl,
-              meta: video.meta ?? {},
-              requireSignedURLs: Boolean(video.requireSignedURLs),
-              allowedOrigins: video.allowedOrigins,
-              thumbnailTimestampPct: video.thumbnailTimestampPct,
-            }),
-          }),
-        );
-        record.uploadedUid = stringValue(copied.uid) ?? stringValue(asRecord(copied.result).uid) ?? null;
+        log(`Stream ${uid}: uploading MP4 backup to target Stream...`);
+        const uploaded = asRecord(await uploadStreamFromFile(context, uid, outPath, name, video));
+        record.uploadedUid = stringValue(uploaded.uid) ?? stringValue(asRecord(uploaded.result).uid) ?? null;
+        log(`Stream ${uid}: uploaded as ${record.uploadedUid ?? "unknown uid"}.`);
       }
     } catch (error) {
       record.error = errorMessage(error);
@@ -161,7 +163,8 @@ export async function migrateStream(context: ApiContext, manifest: Manifest) {
       logError(`Stream ${uid}: ${record.error}`);
       manifest.stream.push(record);
       await writeManifest(context.config, manifest);
-      throw error;
+      log(`Stream ${uid}: skipping after failure; continuing with next video.`);
+      continue;
     }
     manifest.stream.push(record);
     await writeManifest(context.config, manifest);
@@ -182,7 +185,7 @@ async function ensureStreamDownloadUrl(context: ApiContext, uid: string): Promis
     if (!isAlreadyExists(error)) throw error;
   });
   const started = Date.now();
-  while (Date.now() - started < context.config.streamTimeoutMs) {
+  while (Date.now() - started < context.config.streamDownloadReadyTimeoutMs) {
     const result = await cfJson(
       context,
       "from",
@@ -202,7 +205,28 @@ async function ensureStreamDownloadUrl(context: ApiContext, uid: string): Promis
     log(`Stream ${uid}: download status ${status ?? "pending"}; waiting...`);
     await Bun.sleep(context.config.streamPollMs);
   }
-  throw new Error(`timed out waiting for Stream download after ${context.config.streamTimeoutMs}ms`);
+  throw new Error(`timed out waiting for Stream download after ${context.config.streamDownloadReadyTimeoutMs}ms`);
+}
+
+async function uploadStreamFromFile(context: ApiContext, uid: string, filePath: string, name: string, video: StreamItem) {
+  return retry(context, `Stream ${uid} upload`, async () => {
+    const form = new FormData();
+    form.set("file", Bun.file(filePath), `${safeName(name)}.mp4`);
+    form.set("meta", JSON.stringify(video.meta ?? { name }));
+    form.set("requireSignedURLs", String(Boolean(video.requireSignedURLs)));
+    if (Array.isArray(video.allowedOrigins)) form.set("allowedOrigins", JSON.stringify(video.allowedOrigins));
+    if (typeof video.thumbnailTimestampPct === "number")
+      form.set("thumbnailTimestampPct", String(video.thumbnailTimestampPct));
+
+    const endpoint = `/accounts/${context.config.toAccountId}/stream`;
+    const response = await cfFetch(context, "to", endpoint, {
+      method: "POST",
+      body: form,
+      noRetry: true,
+      timeoutMs: context.config.streamTransferTimeoutMs,
+    });
+    return parseCloudflareJson(context, "to", endpoint, "POST", response);
+  });
 }
 
 export async function migrateKv(context: ApiContext, manifest: Manifest) {

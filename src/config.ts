@@ -15,8 +15,10 @@ export type Config = {
   r2BucketMap: Pair[];
   fromR2ParentAccessKeyId?: string;
   toR2ParentAccessKeyId?: string;
-  streamTimeoutMs: number;
+  streamDownloadReadyTimeoutMs: number;
   streamPollMs: number;
+  streamTransferTimeoutMs: number;
+  transferTimeoutMs: number;
   maxRetries: number;
   retryBaseMs: number;
   retryMaxMs: number;
@@ -73,12 +75,22 @@ export function createConfig(options: CliOptions): Config {
     ),
     fromR2ParentAccessKeyId: process.env.CF_FROM_R2_PARENT_ACCESS_KEY_ID,
     toR2ParentAccessKeyId: process.env.CF_TO_R2_PARENT_ACCESS_KEY_ID,
-    streamTimeoutMs: numberFromValue(
-      "CF_STREAM_DOWNLOAD_TIMEOUT_MS",
-      process.env.CF_STREAM_DOWNLOAD_TIMEOUT_MS,
-      900_000,
+    streamDownloadReadyTimeoutMs: numberFromValue(
+      "CF_STREAM_DOWNLOAD_READY_TIMEOUT_MS",
+      process.env.CF_STREAM_DOWNLOAD_READY_TIMEOUT_MS ?? process.env.CF_STREAM_DOWNLOAD_TIMEOUT_MS,
+      1_200_000,
     ),
     streamPollMs: numberFromValue("CF_STREAM_DOWNLOAD_POLL_MS", process.env.CF_STREAM_DOWNLOAD_POLL_MS, 5_000),
+    streamTransferTimeoutMs: numberFromValue(
+      "CF_STREAM_TRANSFER_TIMEOUT_MS",
+      process.env.CF_STREAM_TRANSFER_TIMEOUT_MS,
+      1_800_000,
+    ),
+    transferTimeoutMs: numberFromValue(
+      "CF_MIGRATE_TRANSFER_TIMEOUT_MS",
+      process.env.CF_MIGRATE_TRANSFER_TIMEOUT_MS,
+      300_000,
+    ),
     maxRetries: numberFromValue("CF_MIGRATE_MAX_RETRIES", process.env.CF_MIGRATE_MAX_RETRIES, 8),
     retryBaseMs: numberFromValue("CF_MIGRATE_RETRY_BASE_MS", process.env.CF_MIGRATE_RETRY_BASE_MS, 1_000),
     retryMaxMs: numberFromValue("CF_MIGRATE_RETRY_MAX_MS", process.env.CF_MIGRATE_RETRY_MAX_MS, 60_000),

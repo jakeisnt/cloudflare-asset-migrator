@@ -13,6 +13,7 @@ import {
 } from "./utils";
 
 export type ApiContext = { config: Config; tokenEmails?: Partial<Record<Side, string | null>> };
+export type ApiRequestInit = RequestInit & { noRetry?: boolean; timeoutMs?: number };
 
 export async function listPaginated(fetchPage: (page: number, perPage: number) => Promise<unknown>) {
   const items: unknown[] = [];
@@ -42,27 +43,15 @@ export async function listPaginated(fetchPage: (page: number, perPage: number) =
   return items;
 }
 
-export async function cfJson(context: ApiContext, side: Side, endpoint: string, init: RequestInit = {}) {
+export async function cfJson(context: ApiContext, side: Side, endpoint: string, init: ApiRequestInit = {}) {
   return retry(context, `Cloudflare ${side} JSON ${requestLabel(init.method, endpoint)}`, async () => {
     const response = await cfFetch(context, side, endpoint, init);
-    const json = (await response.json()) as CloudflareEnvelope;
-    if (json.success === false) {
-      const message = await cloudflareErrorMessage(context, side, endpoint, init.method, undefined, "", json.errors);
-      const error = new Error(message) as CloudflareError;
-      error.cloudflareErrors = json.errors;
-      throw error;
-    }
-    if (Array.isArray(json.result)) {
-      const result = json.result as unknown[] & { result_info?: CloudflareEnvelope["result_info"] };
-      result.result_info = json.result_info;
-      return result;
-    }
-    return json.result ?? json;
+    return parseCloudflareJson(context, side, endpoint, init.method, response);
   });
 }
 
-export async function cfFetch(context: ApiContext, side: Side, endpoint: string, init: RequestInit = {}) {
-  return retry(context, `Cloudflare ${side} ${requestLabel(init.method, endpoint)}`, async () => {
+export async function cfFetch(context: ApiContext, side: Side, endpoint: string, init: ApiRequestInit = {}) {
+  const operation = async () => {
     const token = side === "from" ? context.config.fromToken : context.config.toToken;
     const headers = new Headers(init.headers);
     headers.set("Authorization", `Bearer ${token}`);
@@ -87,10 +76,34 @@ export async function cfFetch(context: ApiContext, side: Side, endpoint: string,
     }
 
     return response;
-  });
+  };
+  if (init.noRetry) return operation();
+  return retry(context, `Cloudflare ${side} ${requestLabel(init.method, endpoint)}`, operation);
 }
 
-export async function httpFetch(context: ApiContext, url: string, init: RequestInit = {}) {
+export async function parseCloudflareJson(
+  context: ApiContext,
+  side: Side,
+  endpoint: string,
+  method: string | undefined,
+  response: Response,
+) {
+  const json = (await response.json()) as CloudflareEnvelope;
+  if (json.success === false) {
+    const message = await cloudflareErrorMessage(context, side, endpoint, method, undefined, "", json.errors);
+    const error = new Error(message) as CloudflareError;
+    error.cloudflareErrors = json.errors;
+    throw error;
+  }
+  if (Array.isArray(json.result)) {
+    const result = json.result as unknown[] & { result_info?: CloudflareEnvelope["result_info"] };
+    result.result_info = json.result_info;
+    return result;
+  }
+  return json.result ?? json;
+}
+
+export async function httpFetch(context: ApiContext, url: string, init: ApiRequestInit = {}) {
   return retry(context, `HTTP ${requestLabel(init.method, url)}`, async () => {
     const response = await fetchWithTimeout(context, url, init);
     if (!response.ok) {
@@ -107,11 +120,12 @@ export async function httpFetch(context: ApiContext, url: string, init: RequestI
   });
 }
 
-export async function fetchWithTimeout(context: ApiContext, input: string | URL, init: RequestInit = {}) {
+export async function fetchWithTimeout(context: ApiContext, input: string | URL, init: ApiRequestInit = {}) {
+  const { noRetry: _noRetry, timeoutMs, ...fetchInit } = init;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), context.config.requestTimeoutMs);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs ?? context.config.requestTimeoutMs);
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    return await fetch(input, { ...fetchInit, signal: controller.signal });
   } finally {
     clearTimeout(timeout);
   }
@@ -210,7 +224,21 @@ async function tokenEmail(context: ApiContext, side: Side) {
 }
 
 function isRetryableError(error: unknown) {
-  return errorStatus(error) === 429;
+  const status = errorStatus(error);
+  if (status !== undefined) return status === 408 || status === 409 || status === 425 || status >= 500;
+  if (!(error instanceof Error)) return false;
+  const name = error.name.toLowerCase();
+  const message = error.message.toLowerCase();
+  return (
+    name.includes("abort") ||
+    message.includes("aborted") ||
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("econnreset") ||
+    message.includes("socket") ||
+    message.includes("network") ||
+    message.includes("fetch failed")
+  );
 }
 
 function retryDelayMs(context: ApiContext, error: unknown, attempt: number) {
