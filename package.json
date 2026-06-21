@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
-    "check": "bun build src/index.ts --target=bun --outfile=/tmp/cloudflare-asset-migrator-check.js"
+    "check": "bun build src/index.ts --target=bun --outfile=/tmp/cloudflare-asset-migrator-check.js",
+    "test": "bun test"
   },
   "dependencies": {
     "commander": "^15.0.0"
