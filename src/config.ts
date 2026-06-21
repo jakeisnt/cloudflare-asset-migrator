@@ -11,6 +11,7 @@ export type Config = {
   zoneName?: string;
   dumpDir: string;
   products: Set<Product>;
+  retryFailedProducts: Set<Product>;
   kvNamespaceMap: Pair[];
   r2BucketMap: Pair[];
   fromR2ParentAccessKeyId?: string;
@@ -40,6 +41,7 @@ type CliOptions = {
   zoneName?: string;
   dumpDir?: string;
   products?: string;
+  retryFailed?: string;
   kvNamespaceMap?: string;
   r2BucketMap?: string;
   r2Bucket?: string;
@@ -60,7 +62,12 @@ const allProducts = new Set<Product>([
 ]);
 
 export function createConfig(options: CliOptions): Config {
-  const products = parseProducts(options.products ?? process.env.CF_MIGRATE ?? "images,stream");
+  const retryFailedProducts = parseProducts(options.retryFailed ?? process.env.CF_MIGRATE_RETRY_FAILED ?? "");
+  const products = parseProducts(
+    options.products ??
+      process.env.CF_MIGRATE ??
+      (retryFailedProducts.size > 0 ? [...retryFailedProducts].join(",") : "images,stream"),
+  );
   return {
     fromAccountId: required("from account", options.fromAccountId ?? process.env.CF_FROM_ACCOUNT_ID),
     fromToken: required("from token", options.fromToken ?? process.env.CF_FROM_API_TOKEN),
@@ -71,6 +78,7 @@ export function createConfig(options: CliOptions): Config {
     zoneName: options.zoneName ?? process.env.CF_ZONE_NAME,
     dumpDir: options.dumpDir ?? process.env.CF_ASSET_DUMP_DIR ?? "cloudflare-asset-dump",
     products,
+    retryFailedProducts,
     kvNamespaceMap: parsePairMap(options.kvNamespaceMap ?? process.env.CF_KV_NAMESPACE_MAP),
     r2BucketMap: parsePairMap(
       options.r2BucketMap ??

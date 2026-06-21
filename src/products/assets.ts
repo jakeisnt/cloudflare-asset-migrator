@@ -26,11 +26,14 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
     cfJson(context, "from", `/accounts/${context.config.fromAccountId}/images/v1?page=${page}&per_page=${perPage}`),
   );
   log(`Found ${images.length} image(s).`);
+  const retryFailedImageIds = context.config.retryFailedProducts.has("images") ? failedImageIds(manifest) : null;
+  if (retryFailedImageIds) log(`Images: retrying ${retryFailedImageIds.size} failed image(s) from manifest.`);
 
   for (const rawImage of images) {
     const image = rawImage as ImageItem;
     const id = stringValue(image.id) ?? "";
     if (!id) continue;
+    if (retryFailedImageIds && !retryFailedImageIds.has(id)) continue;
     const filename = safeName(stringValue(image.filename) ?? id);
     const outPath = path.join(context.config.dumpDir, "images", `${safeName(id)}-${filename}`);
     const record = {
@@ -104,6 +107,7 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
       }
     }
 
+    removeImageFailures(manifest, id);
     manifest.images.push(record);
     await writeManifest(context.config, manifest);
   }
@@ -129,6 +133,18 @@ function imageMigrationMetadata(context: ApiContext, id: string, image: ImageIte
   };
 }
 
+function failedImageIds(manifest: Manifest) {
+  const ids = new Set<string>();
+  for (const record of manifest.images) if (record.error) ids.add(record.id);
+  for (const error of manifest.errors) if (error.product === "images" && error.id) ids.add(error.id);
+  return ids;
+}
+
+function removeImageFailures(manifest: Manifest, id: string) {
+  manifest.images = manifest.images.filter((record) => record.id !== id || !record.error);
+  manifest.errors = manifest.errors.filter((error) => error.product !== "images" || error.id !== id);
+}
+
 function isAssetPipelineBlocker(error: unknown) {
   const status = errorStatus(error);
   return status === 401 || status === 403 || status === 404 || status === 429 || isServiceLimit(error);
@@ -152,6 +168,8 @@ export async function migrateStream(context: ApiContext, manifest: Manifest) {
     ),
   );
   log(`Found ${videos.length} Stream video(s).`);
+  const retryFailedStreamUids = context.config.retryFailedProducts.has("stream") ? failedStreamUids(manifest) : null;
+  if (retryFailedStreamUids) log(`Stream: retrying ${retryFailedStreamUids.size} failed video(s) from manifest.`);
 
   const previousStreamRecords = [...(await readPreviousStreamRecords(context)), ...manifest.stream];
   const targetVideosBySourceUid = context.config.dryRun
@@ -167,6 +185,7 @@ export async function migrateStream(context: ApiContext, manifest: Manifest) {
     const video = rawVideo as StreamItem;
     const uid = stringValue(video.uid) ?? "";
     if (!uid) continue;
+    if (retryFailedStreamUids && !retryFailedStreamUids.has(uid)) continue;
     const name = stringValue(video.meta?.name) ?? stringValue(video.meta?.filename) ?? uid;
     const outPath = path.join(context.config.dumpDir, "stream", `${safeName(uid)}-${safeName(name)}.mp4`);
     const record = { uid, name, localPath: outPath, downloadUrl: null, uploadedUid: null, size: 0, skipped: false };
@@ -177,6 +196,7 @@ export async function migrateStream(context: ApiContext, manifest: Manifest) {
         log(`Stream ${uid}: skipping target-side migrated copy of source Stream ${migratedFromStreamUid}.`);
         record.uploadedUid = uid;
         record.skipped = true;
+        removeStreamFailures(manifest, uid);
         manifest.stream.push(record);
         await writeManifest(context.config, manifest);
         continue;
@@ -188,6 +208,7 @@ export async function migrateStream(context: ApiContext, manifest: Manifest) {
         record.uploadedUid = existingUploadedUid;
         record.skipped = true;
         if (fileExistsWithContent(outPath)) record.size = statSync(outPath).size;
+        removeStreamFailures(manifest, uid);
         manifest.stream.push(record);
         await writeManifest(context.config, manifest);
         continue;
@@ -233,9 +254,22 @@ export async function migrateStream(context: ApiContext, manifest: Manifest) {
       log(`Stream ${uid}: skipping after failure; continuing with next video.`);
       continue;
     }
+    removeStreamFailures(manifest, uid);
     manifest.stream.push(record);
     await writeManifest(context.config, manifest);
   }
+}
+
+function failedStreamUids(manifest: Manifest) {
+  const uids = new Set<string>();
+  for (const record of manifest.stream) if (record.error) uids.add(record.uid);
+  for (const error of manifest.errors) if (error.product === "stream" && error.uid) uids.add(error.uid);
+  return uids;
+}
+
+function removeStreamFailures(manifest: Manifest, uid: string) {
+  manifest.stream = manifest.stream.filter((record) => record.uid !== uid || !record.error);
+  manifest.errors = manifest.errors.filter((error) => error.product !== "stream" || error.uid !== uid);
 }
 
 async function readPreviousStreamRecords(context: ApiContext): Promise<StreamRecord[]> {

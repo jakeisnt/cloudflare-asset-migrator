@@ -31,6 +31,7 @@ Useful flags:
 ```sh
 bun run src/index.ts --help
 bun run src/index.ts --dry-run --products dns,zone-settings,page-rules,rulesets
+bun run src/index.ts --retry-failed stream
 bun run src/index.ts --products kv --kv-namespace-map sourceTitle:targetTitle
 bun run src/index.ts --products r2 --r2-bucket-map source-bucket:target-bucket
 ```

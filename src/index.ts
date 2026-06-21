@@ -36,6 +36,10 @@ program
   .option("--kv-namespace-map <pairs>", "fromNamespaceOrTitle:toNamespaceOrTitle pairs (env: CF_KV_NAMESPACE_MAP)")
   .option("--r2-bucket-map <pairs>", "fromBucket:toBucket pairs (env: CF_R2_BUCKET_MAP)")
   .option("--r2-bucket <name>", "shortcut for same-name R2 bucket copy (env: CF_R2_BUCKET)")
+  .option(
+    "--retry-failed <list>",
+    "comma-separated products whose failed manifest records should be retried, e.g. stream,images (env: CF_MIGRATE_RETRY_FAILED)",
+  )
   .option("--dry-run", "download/dump and plan mutations without writing target account", false)
   .action(async (options) => {
     const config = createConfig(options);
@@ -43,7 +47,7 @@ program
     const context = { config };
 
     log(
-      `Starting Cloudflare migration. products=${[...config.products].join(",")} dumpDir=${config.dumpDir} dryRun=${config.dryRun}`,
+      `Starting Cloudflare migration. products=${[...config.products].join(",")} retryFailed=${[...config.retryFailedProducts].join(",") || "none"} dumpDir=${config.dumpDir} dryRun=${config.dryRun}`,
     );
     await prepareDumpDirs(config);
 

@@ -13,6 +13,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     toToken: "to-token",
     dumpDir: "",
     products: new Set<Product>(["images", "stream"]),
+    retryFailedProducts: new Set<Product>(),
     kvNamespaceMap: [],
     r2BucketMap: [],
     streamDownloadReadyTimeoutMs: 1_000,
