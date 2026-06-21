@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@erik-he/cloudflare-asset-migrator",
+      "name": "cloudflare-site-migrator",
       "dependencies": {
         "commander": "^15.0.0",
       },

@@ -1,7 +1,8 @@
 {
-  "name": "@erik-he/cloudflare-asset-migrator",
+  "name": "cloudflare-site-migrator",
   "version": "0.1.0",
-  "private": true,
+  "description": "Bun/TypeScript tool for copying Cloudflare site resources between accounts.",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",

@@ -1,4 +1,5 @@
 node_modules/
+cloudflare-asset-dump/
 .env
 .env.*
 !.env.example

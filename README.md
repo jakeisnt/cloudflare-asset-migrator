@@ -1,32 +1,26 @@
 # Cloudflare site migrator
 
-Portable Bun/TypeScript migration tool for moving Cloudflare resources between accounts. Cloudflare zones are not directly transferred: add the site to the target account, recreate DNS/config/resources, verify, then change registrar nameservers to the target account's nameservers.
+Bun/TypeScript tool for copying Cloudflare account/site resources into another account. It is meant to be reusable, but it is still somewhat slop: review the manifest, run dry-runs first, and expect to manually verify Cloudflare edge cases before cutover.
 
-It can copy/dump:
+Copies/dumps:
 
 - Images and Stream
-- KV namespace contents and R2 buckets when maps are supplied
-- Zone-level site config: DNS records, selected zone settings, Page Rules, Rulesets, Workers Routes, and Custom Hostnames
+- KV namespaces and R2 buckets when maps are supplied
+- Zone config: DNS records, selected zone settings, Page Rules, Rulesets, Workers Routes, and Custom Hostnames
 
-Permission note: Stream migration requires **write/edit permission on the source (`from`) token**, not only read permission, because Cloudflare requires a `POST` to create/download MP4 renditions before the videos can be copied.
+Cloudflare zones cannot be transferred directly. Add the site to the target account, copy/configure resources, verify, then switch registrar nameservers.
 
-Stream uploads are idempotent: the migrator records `migratedFromStreamUid` plus source account/asset details in target video metadata, checks both the existing manifest and target Stream metadata before uploading, and skips previously migrated videos on reruns. Image uploads also include source asset trace metadata.
-
-KV migrations rewrite text/JSON values as they are uploaded so references to migrated Stream UIDs and Images IDs point at the new target assets. If KV values contain full delivery URLs, set optional `CF_FROM_STREAM_CUSTOMER_CODE`/`CF_TO_STREAM_CUSTOMER_CODE` and `CF_FROM_IMAGES_ACCOUNT_HASH`/`CF_TO_IMAGES_ACCOUNT_HASH` so those host/hash references are rewritten too.
-
-Run from this directory:
+## Usage
 
 ```sh
 CF_FROM_ACCOUNT_ID=... \
 CF_FROM_API_TOKEN=... \
 CF_TO_ACCOUNT_ID=... \
 CF_TO_API_TOKEN=... \
-CF_FROM_ZONE_ID=... \
-CF_TO_ZONE_ID=... \
-bun run src/index.ts --products images,stream,dns,zone-settings,page-rules,rulesets,workers-routes,custom-hostnames
+bun run src/index.ts --products images,stream
 ```
 
-Useful flags:
+Common commands:
 
 ```sh
 bun run src/index.ts --help
@@ -36,4 +30,12 @@ bun run src/index.ts --products kv --kv-namespace-map sourceTitle:targetTitle
 bun run src/index.ts --products r2 --r2-bucket-map source-bucket:target-bucket
 ```
 
-The tool writes `manifest.json` plus a manual cutover checklist into `CF_ASSET_DUMP_DIR` (default: `cloudflare-asset-dump`) and exits nonzero if any migration record failed.
+For zone products, also set `CF_FROM_ZONE_ID` and `CF_TO_ZONE_ID` after adding the zone to the target account.
+
+## Notes
+
+- Output goes to `CF_ASSET_DUMP_DIR` (default `cloudflare-asset-dump`) with `manifest.json` and a manual cutover checklist.
+- Stream migration needs **Stream Edit** permission on the source token because Cloudflare requires `POST /downloads` to create MP4 backups.
+- Stream/Image uploads include source metadata and are idempotent across reruns.
+- KV text/JSON values are rewritten to target Stream UIDs and Images IDs. Set customer-code/account-hash env vars if KV stores full delivery URLs.
+- The process exits nonzero when any manifest record failed.
