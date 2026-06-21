@@ -96,7 +96,7 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
         logError(`Image ${id}: ${record.error}`);
         manifest.images.push(record);
         await writeManifest(context.config, manifest);
-        if (isImagePipelineBlocker(error)) {
+        if (isAssetPipelineBlocker(error)) {
           logError(`Images: stopping image pipeline after non-retryable Cloudflare Images failure on ${id}.`);
           break;
         }
@@ -110,7 +110,7 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
   }
 }
 
-function isImagePipelineBlocker(error: unknown) {
+function isAssetPipelineBlocker(error: unknown) {
   const status = errorStatus(error);
   return status === 401 || status === 403 || status === 404 || status === 429 || isServiceLimit(error);
 }
@@ -174,6 +174,10 @@ export async function migrateStream(context: ApiContext, manifest: Manifest) {
       logError(`Stream ${uid}: ${record.error}`);
       manifest.stream.push(record);
       await writeManifest(context.config, manifest);
+      if (isAssetPipelineBlocker(error)) {
+        logError(`Stream: stopping video pipeline after non-retryable Cloudflare Stream failure on ${uid}.`);
+        break;
+      }
       log(`Stream ${uid}: skipping after failure; continuing with next video.`);
       continue;
     }
