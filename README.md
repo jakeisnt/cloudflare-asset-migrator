@@ -1,4 +1,4 @@
-# Cloudflare site migrator (alpha)
+# Cloudflare asset migrator (alpha)
 
 Copy Cloudflare account and site resources from one account to another.
 Developed when working with a client to move a website and all corresponding hosted data from my cloudflare system to theirs!
