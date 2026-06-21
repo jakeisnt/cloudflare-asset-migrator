@@ -48,8 +48,8 @@ program
     await prepareDumpDirs(config);
 
     try {
-      if (config.products.has("images")) await runProduct("images", manifest, () => migrateImages(context, manifest));
       if (config.products.has("stream")) await runProduct("stream", manifest, () => migrateStream(context, manifest));
+      if (config.products.has("images")) await runProduct("images", manifest, () => migrateImages(context, manifest));
       if (config.products.has("kv")) await runProduct("kv", manifest, () => migrateKv(context, manifest));
       if (config.products.has("r2")) await runProduct("r2", manifest, () => migrateR2(context, manifest));
       await migrateSiteProducts(context, manifest);

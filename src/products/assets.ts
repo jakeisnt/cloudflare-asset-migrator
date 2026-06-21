@@ -10,7 +10,9 @@ import {
   arrayValue,
   asRecord,
   errorMessage,
+  errorStatus,
   isAlreadyExists,
+  isServiceLimit,
   log,
   logError,
   resultInfo,
@@ -94,6 +96,10 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
         logError(`Image ${id}: ${record.error}`);
         manifest.images.push(record);
         await writeManifest(context.config, manifest);
+        if (isImagePipelineBlocker(error)) {
+          logError(`Images: stopping image pipeline after non-retryable Cloudflare Images failure on ${id}.`);
+          break;
+        }
         log(`Image ${id}: skipping after failure; continuing with next image.`);
         continue;
       }
@@ -102,6 +108,11 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
     manifest.images.push(record);
     await writeManifest(context.config, manifest);
   }
+}
+
+function isImagePipelineBlocker(error: unknown) {
+  const status = errorStatus(error);
+  return status === 401 || status === 403 || status === 404 || status === 429 || isServiceLimit(error);
 }
 
 function fileExistsWithContent(filePath: string) {
