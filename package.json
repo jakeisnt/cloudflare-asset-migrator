@@ -1,0 +1,14 @@
+{
+  "name": "@erik-he/cloudflare-asset-migrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "check": "bun build src/index.ts --target=bun --outfile=/tmp/cloudflare-asset-migrator-check.js"
+  },
+  "dependencies": {
+    "commander": "^15.0.0"
+  },
+  "devDependencies": {}
+}

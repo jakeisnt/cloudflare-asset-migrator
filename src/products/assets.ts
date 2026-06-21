@@ -1,0 +1,301 @@
+import { existsSync, statSync } from "node:fs";
+import path from "node:path";
+import type { ApiContext } from "../api";
+import { cfFetch, cfJson, httpFetch, listPaginated } from "../api";
+import { responseBytesWithRetries, saveResponseWithRetries, writeBytes } from "../files";
+import { writeManifest } from "../manifest";
+import { createR2TemporaryCredentials, r2Fetch, r2ListObjects } from "../r2";
+import type { ImageItem, KvKeyInfo, KvNamespace, Manifest, StreamItem } from "../types";
+import {
+  arrayValue,
+  asRecord,
+  errorMessage,
+  isAlreadyExists,
+  log,
+  logError,
+  resultInfo,
+  safeName,
+  stringValue,
+} from "../utils";
+
+export async function migrateImages(context: ApiContext, manifest: Manifest) {
+  log("Listing Cloudflare Images...");
+  const images = await listPaginated((page, perPage) =>
+    cfJson(context, "from", `/accounts/${context.config.fromAccountId}/images/v1?page=${page}&per_page=${perPage}`),
+  );
+  log(`Found ${images.length} image(s).`);
+
+  for (const rawImage of images) {
+    const image = rawImage as ImageItem;
+    const id = stringValue(image.id) ?? "";
+    if (!id) continue;
+    const filename = safeName(stringValue(image.filename) ?? id);
+    const outPath = path.join(context.config.dumpDir, "images", `${safeName(id)}-${filename}`);
+    const record = {
+      id,
+      filename: stringValue(image.filename) ?? null,
+      localPath: outPath,
+      uploadedId: null,
+      skipped: false,
+    };
+
+    try {
+      let contentType = "application/octet-stream";
+      if (fileExistsWithContent(outPath)) {
+        log(`Image ${id}: using existing local dump.`);
+      } else {
+        log(`Image ${id}: downloading...`);
+        const blob = await saveResponseWithRetries(
+          context,
+          `Image ${id} download`,
+          () =>
+            cfFetch(
+              context,
+              "from",
+              `/accounts/${context.config.fromAccountId}/images/v1/${encodeURIComponent(id)}/blob`,
+            ),
+          outPath,
+        );
+        contentType = blob.contentType;
+      }
+
+      if (context.config.dryRun) {
+        log(`Image ${id}: dry-run, not uploading.`);
+        record.skipped = true;
+      } else {
+        log(`Image ${id}: uploading...`);
+        const form = new FormData();
+        const bytes = await Bun.file(outPath).bytes();
+        form.set("file", new Blob([bytes], { type: contentType }), stringValue(image.filename) ?? filename);
+        form.set("id", id);
+        if (typeof image.metadata === "object" && image.metadata !== null && Object.keys(image.metadata).length > 0)
+          form.set("metadata", JSON.stringify(image.metadata));
+        if (typeof image.requireSignedURLs === "boolean")
+          form.set("requireSignedURLs", String(image.requireSignedURLs));
+        const upload = asRecord(
+          await cfJson(context, "to", `/accounts/${context.config.toAccountId}/images/v1`, {
+            method: "POST",
+            body: form,
+          }),
+        );
+        record.uploadedId = stringValue(upload.id) ?? stringValue(asRecord(upload.result).id) ?? id;
+        log(`Image ${id}: uploaded as ${record.uploadedId}.`);
+      }
+    } catch (error) {
+      if (isAlreadyExists(error)) {
+        log(`Image ${id}: already exists on target; keeping existing ID.`);
+        record.uploadedId = id;
+        record.skipped = true;
+      } else {
+        record.error = errorMessage(error);
+        manifest.errors.push({ product: "images", id, error: record.error });
+        logError(`Image ${id}: ${record.error}`);
+        manifest.images.push(record);
+        await writeManifest(context.config, manifest);
+        throw error;
+      }
+    }
+
+    manifest.images.push(record);
+    await writeManifest(context.config, manifest);
+  }
+}
+
+function fileExistsWithContent(filePath: string) {
+  try {
+    return existsSync(filePath) && statSync(filePath).size > 0;
+  } catch {
+    return false;
+  }
+}
+
+export async function migrateStream(context: ApiContext, manifest: Manifest) {
+  log("Listing Cloudflare Stream videos...");
+  const videos = await listPaginated((page, perPage) =>
+    cfJson(
+      context,
+      "from",
+      `/accounts/${context.config.fromAccountId}/stream?page=${page}&per_page=${perPage}&include_counts=true`,
+    ),
+  );
+  log(`Found ${videos.length} Stream video(s).`);
+
+  for (const rawVideo of videos) {
+    const video = rawVideo as StreamItem;
+    const uid = stringValue(video.uid) ?? "";
+    if (!uid) continue;
+    const name = stringValue(video.meta?.name) ?? stringValue(video.meta?.filename) ?? uid;
+    const outPath = path.join(context.config.dumpDir, "stream", `${safeName(uid)}-${safeName(name)}.mp4`);
+    const record = { uid, name, localPath: outPath, downloadUrl: null, uploadedUid: null };
+
+    try {
+      const downloadUrl = await ensureStreamDownloadUrl(context, uid);
+      record.downloadUrl = downloadUrl;
+      await saveResponseWithRetries(
+        context,
+        `Stream ${uid} MP4 download`,
+        () => httpFetch(context, downloadUrl),
+        outPath,
+      );
+      if (context.config.dryRun) {
+        log(`Stream ${uid}: dry-run, not uploading.`);
+      } else {
+        const copied = asRecord(
+          await cfJson(context, "to", `/accounts/${context.config.toAccountId}/stream/copy`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              url: downloadUrl,
+              meta: video.meta ?? {},
+              requireSignedURLs: Boolean(video.requireSignedURLs),
+              allowedOrigins: video.allowedOrigins,
+              thumbnailTimestampPct: video.thumbnailTimestampPct,
+            }),
+          }),
+        );
+        record.uploadedUid = stringValue(copied.uid) ?? stringValue(asRecord(copied.result).uid) ?? null;
+      }
+    } catch (error) {
+      record.error = errorMessage(error);
+      manifest.errors.push({ product: "stream", uid, error: record.error });
+      logError(`Stream ${uid}: ${record.error}`);
+      manifest.stream.push(record);
+      await writeManifest(context.config, manifest);
+      throw error;
+    }
+    manifest.stream.push(record);
+    await writeManifest(context.config, manifest);
+  }
+}
+
+async function ensureStreamDownloadUrl(context: ApiContext, uid: string): Promise<string> {
+  await cfJson(
+    context,
+    "from",
+    `/accounts/${context.config.fromAccountId}/stream/${encodeURIComponent(uid)}/downloads`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    },
+  ).catch((error: unknown) => {
+    if (!isAlreadyExists(error)) throw error;
+  });
+  const started = Date.now();
+  while (Date.now() - started < context.config.streamTimeoutMs) {
+    const result = await cfJson(
+      context,
+      "from",
+      `/accounts/${context.config.fromAccountId}/stream/${encodeURIComponent(uid)}/downloads`,
+    );
+    const resultRecord = asRecord(result);
+    const candidate =
+      resultRecord.default ?? asRecord(resultRecord.downloads).default ?? arrayValue(result)[0] ?? result;
+    const candidateRecord = asRecord(candidate);
+    const status =
+      stringValue(asRecord(candidateRecord.status).state) ??
+      stringValue(candidateRecord.status) ??
+      stringValue(asRecord(resultRecord.status).state) ??
+      stringValue(resultRecord.status);
+    const url = stringValue(candidateRecord.url);
+    if (url && status?.toLowerCase() !== "inprogress") return url;
+    log(`Stream ${uid}: download status ${status ?? "pending"}; waiting...`);
+    await Bun.sleep(context.config.streamPollMs);
+  }
+  throw new Error(`timed out waiting for Stream download after ${context.config.streamTimeoutMs}ms`);
+}
+
+export async function migrateKv(context: ApiContext, manifest: Manifest) {
+  if (context.config.kvNamespaceMap.length === 0)
+    throw new Error("CF_MIGRATE includes kv but CF_KV_NAMESPACE_MAP is empty.");
+  for (const [fromNamespaceRef, toNamespaceRef] of context.config.kvNamespaceMap) {
+    const fromNamespaceId = await resolveKvNamespace(context, "from", fromNamespaceRef);
+    const toNamespaceId = await resolveKvNamespace(context, "to", toNamespaceRef);
+    let cursor: string | undefined;
+    do {
+      const query = new URLSearchParams({ limit: "1000" });
+      if (cursor) query.set("cursor", cursor);
+      const page = await cfJson(
+        context,
+        "from",
+        `/accounts/${context.config.fromAccountId}/storage/kv/namespaces/${fromNamespaceId}/keys?${query}`,
+      );
+      for (const rawKeyInfo of arrayValue(page)) {
+        const key = stringValue((rawKeyInfo as KvKeyInfo).name);
+        if (!key) continue;
+        const localPath = path.join(context.config.dumpDir, "kv", `${safeName(fromNamespaceId)}-${safeName(key)}.bin`);
+        const value = await responseBytesWithRetries(context, `KV ${fromNamespaceId}/${key} download`, () =>
+          cfFetch(
+            context,
+            "from",
+            `/accounts/${context.config.fromAccountId}/storage/kv/namespaces/${fromNamespaceId}/values/${encodeURIComponent(key)}`,
+          ),
+        );
+        await writeBytes(localPath, value.bytes);
+        if (!context.config.dryRun) {
+          await cfFetch(
+            context,
+            "to",
+            `/accounts/${context.config.toAccountId}/storage/kv/namespaces/${toNamespaceId}/values/${encodeURIComponent(key)}`,
+            {
+              method: "PUT",
+              headers: { "content-type": value.contentType },
+              body: value.bytes,
+            },
+          );
+        }
+        manifest.kv.push({ fromNamespaceId, toNamespaceId, key, localPath });
+      }
+      cursor = stringValue(resultInfo(page).cursor);
+      await writeManifest(context.config, manifest);
+    } while (cursor);
+  }
+}
+
+async function resolveKvNamespace(context: ApiContext, side: "from" | "to", namespaceRef: string) {
+  if (/^[a-f0-9]{32}$/i.test(namespaceRef)) return namespaceRef;
+  const accountId = side === "from" ? context.config.fromAccountId : context.config.toAccountId;
+  const namespaces = await listPaginated((page, perPage) =>
+    cfJson(context, side, `/accounts/${accountId}/storage/kv/namespaces?page=${page}&per_page=${perPage}`),
+  );
+  const match = namespaces.find((namespace) => {
+    const item = namespace as KvNamespace;
+    return item.title === namespaceRef || item.id === namespaceRef;
+  }) as KvNamespace | undefined;
+  const id = stringValue(match?.id);
+  if (!id) throw new Error(`Could not resolve KV namespace ${namespaceRef} in ${side} account`);
+  return id;
+}
+
+export async function migrateR2(context: ApiContext, manifest: Manifest) {
+  if (context.config.r2BucketMap.length === 0)
+    throw new Error("CF_MIGRATE includes r2 but CF_R2_BUCKET_MAP or CF_R2_BUCKET is empty.");
+  for (const [fromBucket, toBucket] of context.config.r2BucketMap) {
+    const fromCredentials = await createR2TemporaryCredentials(context, "from", fromBucket, "object-read-only");
+    const toCredentials = await createR2TemporaryCredentials(context, "to", toBucket, "object-read-write");
+    let continuationToken: string | undefined;
+    do {
+      const page = await r2ListObjects(context, "from", fromBucket, fromCredentials, continuationToken);
+      for (const object of page.objects) {
+        const localPath = path.join(
+          context.config.dumpDir,
+          "r2",
+          safeName(fromBucket),
+          ...object.key.split("/").map(safeName),
+        );
+        const response = await responseBytesWithRetries(context, `R2 ${fromBucket}/${object.key} download`, () =>
+          r2Fetch(context, "from", "GET", fromBucket, object.key, fromCredentials),
+        );
+        await writeBytes(localPath, response.bytes);
+        if (!context.config.dryRun)
+          await r2Fetch(context, "to", "PUT", toBucket, object.key, toCredentials, {
+            body: response.bytes,
+            contentType: response.contentType,
+          });
+        manifest.r2.push({ fromBucket, toBucket, key: object.key, localPath, size: response.bytes.byteLength });
+        await writeManifest(context.config, manifest);
+      }
+      continuationToken = page.nextContinuationToken;
+    } while (continuationToken);
+  }
+}
