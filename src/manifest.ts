@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { Config } from "./config";
@@ -5,6 +6,24 @@ import type { Manifest } from "./types";
 import { log, logError } from "./utils";
 
 export function createManifest(config: Config): Manifest {
+  const manifestPath = path.join(config.dumpDir, "manifest.json");
+  if (existsSync(manifestPath)) {
+    try {
+      const existing = JSON.parse(readFileSync(manifestPath, "utf8")) as Manifest;
+      log(`Loaded existing manifest for resumable migration: ${manifestPath}`);
+      return {
+        ...existing,
+        fromAccountId: config.fromAccountId,
+        toAccountId: config.toAccountId,
+        fromZoneId: config.fromZoneId,
+        toZoneId: config.toZoneId,
+      };
+    } catch (error) {
+      logError(
+        `Could not read existing manifest (${error instanceof Error ? error.message : String(error)}); starting a new manifest.`,
+      );
+    }
+  }
   return {
     startedAt: new Date().toISOString(),
     fromAccountId: config.fromAccountId,
