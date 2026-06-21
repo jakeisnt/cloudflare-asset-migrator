@@ -44,7 +44,10 @@ export function testManifest(config: Config): Manifest {
   };
 }
 
-export async function withTempContext<T>(overrides: Partial<Config>, run: (context: ApiContext, manifest: Manifest) => Promise<T>) {
+export async function withTempContext<T>(
+  overrides: Partial<Config>,
+  run: (context: ApiContext, manifest: Manifest) => Promise<T>,
+) {
   const dumpDir = await mkdtemp(path.join(os.tmpdir(), "cf-migrator-test-"));
   const config = testConfig({ dumpDir, ...overrides });
   const context: ApiContext = { config };
@@ -65,7 +68,9 @@ export function jsonResponse(result: unknown, init: ResponseInit = {}) {
   });
 }
 
-export function installFetchMock(handler: (url: string, init: RequestInit | undefined) => Response | Promise<Response>) {
+export function installFetchMock(
+  handler: (url: string, init: RequestInit | undefined) => Response | Promise<Response>,
+) {
   const calls: FetchCall[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {

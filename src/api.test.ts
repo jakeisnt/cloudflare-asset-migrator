@@ -40,10 +40,11 @@ describe("Cloudflare API helpers", () => {
   });
 
   test("cfJson rejects failed Cloudflare envelopes", async () => {
-    const mock = installFetchMock(() =>
-      new Response(JSON.stringify({ success: false, errors: [{ code: 10000, message: "not authorized" }] }), {
-        headers: { "content-type": "application/json" },
-      }),
+    const mock = installFetchMock(
+      () =>
+        new Response(JSON.stringify({ success: false, errors: [{ code: 10000, message: "not authorized" }] }), {
+          headers: { "content-type": "application/json" },
+        }),
     );
     restoreFetch = mock.restore;
 

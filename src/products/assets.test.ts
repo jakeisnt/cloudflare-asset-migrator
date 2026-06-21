@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
+import { type FetchCall, installFetchMock, jsonResponse, withTempContext } from "../test-helpers";
 import { migrateImages, migrateKv, migrateStream } from "./assets";
-import { installFetchMock, jsonResponse, type FetchCall, withTempContext } from "../test-helpers";
 
 let restoreFetch: (() => void) | undefined;
 
@@ -39,7 +39,11 @@ describe("migrateImages", () => {
         if (path === "/client/v4/accounts/to-account/images/v1" && init?.method === "POST") {
           const form = init.body as FormData;
           expect(form.get("id")).toBe("image-1");
-          expect(form.get("metadata")).toBe(JSON.stringify({ alt: "Hero" }));
+          const metadata = JSON.parse(String(form.get("metadata"))) as Record<string, unknown>;
+          expect(metadata.alt).toBe("Hero");
+          expect(metadata.migratedFromImageId).toBe("image-1");
+          expect(metadata.migratedFromAccountId).toBe("from-account");
+          expect((metadata.sourceAsset as Record<string, unknown>).product).toBe("cloudflare-images");
           expect(form.get("requireSignedURLs")).toBe("true");
           expect(form.get("file")).toBeInstanceOf(File);
           return jsonResponse({ id: "uploaded-image-1" });
@@ -51,7 +55,12 @@ describe("migrateImages", () => {
       await migrateImages(context, manifest);
 
       expect(manifest.images).toEqual([
-        expect.objectContaining({ id: "image-1", filename: "Hero Image.jpg", uploadedId: "uploaded-image-1", skipped: false }),
+        expect.objectContaining({
+          id: "image-1",
+          filename: "Hero Image.jpg",
+          uploadedId: "uploaded-image-1",
+          skipped: false,
+        }),
       ]);
       expect(await readFile(manifest.images[0]?.localPath ?? "", "utf8")).toBe("image-bytes");
       expect(mock.calls.map((call) => `${method(call)} ${endpoint(call.url)}`)).toEqual([
@@ -120,7 +129,9 @@ describe("migrateStream", () => {
           return jsonResponse({ ok: true });
         }
         if (path === "/client/v4/accounts/from-account/stream/video-1/downloads") {
-          return jsonResponse({ default: { status: { state: "ready" }, url: "https://downloads.example/video-1.mp4" } });
+          return jsonResponse({
+            default: { status: { state: "ready" }, url: "https://downloads.example/video-1.mp4" },
+          });
         }
         if (url === "https://downloads.example/video-1.mp4") return new Response("mp4-bytes");
         if (path === "/client/v4/accounts/to-account/stream" && init?.method === "POST") {
@@ -139,7 +150,12 @@ describe("migrateStream", () => {
       await migrateStream(context, manifest);
 
       expect(manifest.stream).toEqual([
-        expect.objectContaining({ uid: "video-1", name: "Launch Film", uploadedUid: "uploaded-video-1", skipped: false }),
+        expect.objectContaining({
+          uid: "video-1",
+          name: "Launch Film",
+          uploadedUid: "uploaded-video-1",
+          skipped: false,
+        }),
       ]);
       expect(await readFile(manifest.stream[0]?.localPath ?? "", "utf8")).toBe("mp4-bytes");
     });
@@ -192,8 +208,22 @@ describe("migrateStream", () => {
 });
 
 describe("migrateKv", () => {
-  test("resolves namespace names, downloads keys, and writes target values", async () => {
+  test("resolves namespace names, downloads keys, rewrites asset references, and writes target values", async () => {
     await withTempContext({ kvNamespaceMap: [["Source KV", "Target KV"]] }, async (context, manifest) => {
+      manifest.stream.push({
+        uid: "old-video",
+        name: "Old video",
+        localPath: "stream.mp4",
+        downloadUrl: null,
+        uploadedUid: "new-video",
+      });
+      manifest.images.push({
+        id: "old-image",
+        filename: "old.jpg",
+        localPath: "image.jpg",
+        uploadedId: "new-image",
+        skipped: false,
+      });
       const mock = installFetchMock(async (url, init) => {
         const path = endpoint(url);
         if (path === "/client/v4/accounts/from-account/storage/kv/namespaces?page=1&per_page=100") {
@@ -202,14 +232,21 @@ describe("migrateKv", () => {
         if (path === "/client/v4/accounts/to-account/storage/kv/namespaces?page=1&per_page=100") {
           return jsonResponse([{ id: "tonamespaceid000000000000000000", title: "Target KV" }]);
         }
-        if (path === "/client/v4/accounts/from-account/storage/kv/namespaces/fromnamespaceid0000000000000000/keys?limit=1000") {
+        if (
+          path ===
+          "/client/v4/accounts/from-account/storage/kv/namespaces/fromnamespaceid0000000000000000/keys?limit=1000"
+        ) {
           return jsonResponse([{ name: "site_config" }]);
         }
         if (path.endsWith("/values/site_config") && method({ url, init }) === "GET") {
-          return new Response(JSON.stringify({ theme: "flat" }), { headers: { "content-type": "application/json" } });
+          return new Response(JSON.stringify({ theme: "flat", filmId: "old-video", imageId: "old-image" }), {
+            headers: { "content-type": "application/json" },
+          });
         }
         if (path.endsWith("/values/site_config") && method({ url, init }) === "PUT") {
-          expect(await new Response(init?.body).text()).toBe(JSON.stringify({ theme: "flat" }));
+          expect(await new Response(init?.body).text()).toBe(
+            JSON.stringify({ theme: "flat", filmId: "new-video", imageId: "new-image" }),
+          );
           expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
           return new Response(null, { status: 200 });
         }
@@ -226,7 +263,9 @@ describe("migrateKv", () => {
           key: "site_config",
         }),
       ]);
-      expect(await readFile(manifest.kv[0]?.localPath ?? "", "utf8")).toBe(JSON.stringify({ theme: "flat" }));
+      expect(await readFile(manifest.kv[0]?.localPath ?? "", "utf8")).toBe(
+        JSON.stringify({ theme: "flat", filmId: "old-video", imageId: "old-image" }),
+      );
     });
   });
 });
