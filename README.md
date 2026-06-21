@@ -10,6 +10,8 @@ It can copy/dump:
 
 Permission note: Stream migration requires **write/edit permission on the source (`from`) token**, not only read permission, because Cloudflare requires a `POST` to create/download MP4 renditions before the videos can be copied.
 
+Stream uploads are idempotent: the migrator records `migratedFromStreamUid` plus source account/asset details in target video metadata, checks both the existing manifest and target Stream metadata before uploading, and skips previously migrated videos on reruns.
+
 Run from this directory:
 
 ```sh

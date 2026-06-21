@@ -59,6 +59,7 @@ export type StreamRecord = {
   downloadUrl: string | null;
   uploadedUid: string | null;
   size?: number;
+  skipped?: boolean;
   error?: string;
 };
 

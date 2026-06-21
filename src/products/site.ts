@@ -46,12 +46,7 @@ export async function migrateSiteProducts(context: ApiContext, manifest: Manifes
     await runSiteProduct(context, manifest, "custom-hostnames", () => migrateCustomHostnames(context, manifest));
 }
 
-async function runSiteProduct(
-  context: ApiContext,
-  manifest: Manifest,
-  product: SiteProduct,
-  run: () => Promise<void>,
-) {
+async function runSiteProduct(context: ApiContext, manifest: Manifest, product: SiteProduct, run: () => Promise<void>) {
   try {
     await run();
   } catch (error) {
