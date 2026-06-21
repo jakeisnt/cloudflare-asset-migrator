@@ -34,6 +34,11 @@ export async function migrateImages(context: ApiContext, manifest: Manifest) {
     const id = stringValue(image.id) ?? "";
     if (!id) continue;
     if (retryFailedImageIds && !retryFailedImageIds.has(id)) continue;
+    const existingRecord = manifest.images.find((record) => record.id === id && record.uploadedId && !record.error);
+    if (existingRecord) {
+      log(`Image ${id}: already migrated as ${existingRecord.uploadedId}; skipping upload.`);
+      continue;
+    }
     const filename = safeName(stringValue(image.filename) ?? id);
     const outPath = path.join(context.config.dumpDir, "images", `${safeName(id)}-${filename}`);
     const record = {
@@ -533,12 +538,12 @@ function addRecordReplacements(replacements: Map<string, string>, records: Array
 }
 
 function rewriteKvAssetReferences(bytes: Uint8Array, replacements: Array<[string, string]>) {
-  if (replacements.length === 0) return { bytes, replacementCount: 0 };
+  if (replacements.length === 0) return { bytes, replacementCount: 0, staleReferences: [] as string[] };
   let text: string;
   try {
     text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
-    return { bytes, replacementCount: 0 };
+    return { bytes, replacementCount: 0, staleReferences: [] as string[] };
   }
 
   let replacementCount = 0;
@@ -549,8 +554,17 @@ function rewriteKvAssetReferences(bytes: Uint8Array, replacements: Array<[string
     replacementCount += count;
     rewritten = rewritten.replaceAll(from, to);
   }
-  if (replacementCount === 0) return { bytes, replacementCount };
-  return { bytes: new TextEncoder().encode(rewritten), replacementCount };
+  const staleReferences = staleAssetReferences(rewritten, replacements);
+  if (replacementCount === 0) return { bytes, replacementCount, staleReferences };
+  return { bytes: new TextEncoder().encode(rewritten), replacementCount, staleReferences };
+}
+
+function staleAssetReferences(text: string, replacements: Array<[string, string]>) {
+  const stale = new Set<string>();
+  for (const [from] of replacements) {
+    if (text.includes(from)) stale.add(from);
+  }
+  return [...stale];
 }
 
 export async function migrateKv(context: ApiContext, manifest: Manifest) {
@@ -584,6 +598,13 @@ export async function migrateKv(context: ApiContext, manifest: Manifest) {
         const rewrittenValue = rewriteKvAssetReferences(value.bytes, assetReferenceReplacements);
         if (rewrittenValue.replacementCount > 0) {
           log(`KV ${fromNamespaceId}/${key}: rewrote ${rewrittenValue.replacementCount} asset reference(s).`);
+        }
+        if (rewrittenValue.staleReferences.length > 0) {
+          const error = `KV ${fromNamespaceId}/${key}: ${rewrittenValue.staleReferences.length} stale source asset reference(s) remain after rewrite: ${rewrittenValue.staleReferences.join(", ")}`;
+          logError(error);
+          manifest.kv.push({ fromNamespaceId, toNamespaceId, key, localPath, error });
+          manifest.errors.push({ product: "kv", key, error });
+          continue;
         }
         if (!context.config.dryRun) {
           await cfFetch(
